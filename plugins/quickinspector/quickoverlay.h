@@ -33,11 +33,14 @@
 #include <QPointer>
 #include <QQuickItem>
 #include <QMutex>
+#include <memory>
 
 #include "quickdecorationsdrawer.h"
 
 QT_BEGIN_NAMESPACE
 class QQuickWindow;
+class QOpenGLPaintDevice;
+class QSGSoftwareRenderer;
 QT_END_NAMESPACE
 
 namespace GammaRay {
@@ -79,62 +82,10 @@ public:
     QVector<QuickItemGeometry> itemsGeometry;
 };
 
-class QuickOverlay : public QObject
+class QuickRemoteViewSource : public QObject
 {
     Q_OBJECT
-
 public:
-    QuickOverlay();
-
-    QQuickWindow *window() const;
-    void setWindow(QQuickWindow *window);
-
-    QuickDecorationsSettings settings() const;
-    void setSettings(const QuickDecorationsSettings &settings);
-
-    bool decorationsEnabled() const;
-    void setDecorationsEnabled(bool enabled);
-
-    /**
-     * Place the overlay on @p item
-     *
-     * @param item The overlay can be cover a widget or a layout of the current window
-     */
-    void placeOn(const ItemOrLayoutFacade &item);
-
-    void requestGrabWindow(const QRectF &userViewport);
-
-signals:
-    void grabberReadyChanged(bool ready);
-    void sceneChanged();
-    void sceneGrabbed(const GammaRay::GrabbedFrame &frame);
-
-private:
-    void setGrabbingMode(bool isGrabbingMode, const QRectF &userViewport);
-    void windowAfterSynchronizing();
-    void windowAfterRendering();
-    void gatherRenderInfo();
-    void drawDecorations();
-    void updateOverlay();
-    void itemParentChanged(QQuickItem *parent);
-    void itemWindowChanged(QQuickWindow *window);
-    void connectItemChanges(QQuickItem *item);
-    void disconnectItemChanges(QQuickItem *item);
-    void connectTopItemChanges(QQuickItem *item);
-    void disconnectTopItemChanges(QQuickItem *item);
-    QuickItemGeometry initFromItem(QQuickItem *item) const;
-
-    QPointer<QQuickWindow> m_window;
-    QPointer<QQuickItem> m_currentToplevelItem;
-    ItemOrLayoutFacade m_currentItem;
-    QuickDecorationsSettings m_settings;
-    bool m_isGrabbingMode;
-    bool m_decorationsEnabled;
-    QRectF m_userViewport;
-    GrabbedFrame m_grabbedFrame;
-    QMetaMethod m_sceneGrabbed;
-    QMetaMethod m_sceneChanged;
-    QMutex m_mutex;
     struct RenderInfo {
         // Keep in sync with QSGRendererInterface::GraphicsApi
         enum GraphicsApi {
@@ -152,8 +103,181 @@ private:
         qreal dpr;
         QSize windowSize;
         GraphicsApi graphicsApi;
-    } m_renderInfo;
+    };
+
+    explicit QuickRemoteViewSource(QQuickWindow *window);
+    virtual ~QuickRemoteViewSource();
+
+    static RenderInfo::GraphicsApi graphicsApiFor(QQuickWindow *window);
+    static std::unique_ptr<QuickRemoteViewSource> get(QQuickWindow *window);
+
+    QQuickWindow *window() const;
+
+    QuickDecorationsSettings settings() const;
+    void setSettings(const QuickDecorationsSettings &settings);
+
+    bool decorationsEnabled() const;
+    void setDecorationsEnabled(bool enabled);
+
+    /**
+     * Place the overlay on @p item
+     *
+     * @param item The overlay can be cover a widget or a layout of the current window
+     */
+    void placeOn(const ItemOrLayoutFacade &item);
+
+    virtual void requestGrabWindow(const QRectF &userViewport) = 0;
+
+signals:
+    void grabberReadyChanged(bool ready);
+    void sceneChanged();
+    void sceneGrabbed(const GammaRay::GrabbedFrame &frame);
+
+protected:
+    void doDrawDecorations(QPainter &painter);
+    void gatherRenderInfo();
+
+    virtual void drawDecorations() = 0;
+
+    virtual void updateOverlay();
+    static QuickItemGeometry initFromItem(QQuickItem *item);
+
+private:
+    void itemParentChanged(QQuickItem *parent);
+    void itemWindowChanged(QQuickWindow *window);
+    void connectItemChanges(QQuickItem *item);
+    void disconnectItemChanges(QQuickItem *item);
+    void connectTopItemChanges(QQuickItem *item);
+    void disconnectTopItemChanges(QQuickItem *item);
+
+protected:
+    QPointer<QQuickWindow> m_window;
+    QPointer<QQuickItem> m_currentToplevelItem;
+    ItemOrLayoutFacade m_currentItem;
+    QuickDecorationsSettings m_settings;
+    bool m_decorationsEnabled;
+    QRectF m_userViewport;
+    GrabbedFrame m_grabbedFrame;
+    QMetaMethod m_sceneChanged;
+    QMetaMethod m_sceneGrabbed;
+    RenderInfo m_renderInfo;
 };
+
+class OpenGLScreenGrabber : public QuickRemoteViewSource
+{
+    Q_OBJECT
+public:
+    explicit OpenGLScreenGrabber(QQuickWindow *window);
+    virtual ~OpenGLScreenGrabber();
+
+    void requestGrabWindow(const QRectF &userViewport) override;
+    void drawDecorations() override;
+
+private:
+    void setGrabbingMode(bool isGrabbingMode, const QRectF &userViewport);
+    void windowAfterSynchronizing();
+    void windowAfterRendering();
+
+    bool m_isGrabbing;
+    QMutex m_mutex;
+    std::unique_ptr<QOpenGLPaintDevice> m_overlayPaintDevice;
+};
+
+class SoftwareScreenGrabber : public QuickRemoteViewSource
+{
+    Q_OBJECT
+public:
+    explicit SoftwareScreenGrabber(QQuickWindow *window);
+    virtual ~SoftwareScreenGrabber();
+
+    void requestGrabWindow(const QRectF &userViewport) override;
+    void drawDecorations() override;
+
+private:
+    void windowAfterRendering();
+    void windowBeforeRendering();
+
+    QSGSoftwareRenderer *softwareRenderer() const;
+
+    bool m_isGrabbing = false;
+    QPointF m_lastItemPosition;
+};
+
+// class QuickOverlay : public QObject
+// {
+//     Q_OBJECT
+//
+// public:
+//     QuickOverlay();
+//
+//     QQuickWindow *window() const;
+//     void setWindow(QQuickWindow *window);
+//
+//     QuickDecorationsSettings settings() const;
+//     void setSettings(const QuickDecorationsSettings &settings);
+//
+//     bool decorationsEnabled() const;
+//     void setDecorationsEnabled(bool enabled);
+//
+//     /**
+//      * Place the overlay on @p item
+//      *
+//      * @param item The overlay can be cover a widget or a layout of the current window
+//      */
+//     void placeOn(const ItemOrLayoutFacade &item);
+//
+//     void requestGrabWindow(const QRectF &userViewport);
+//
+// signals:
+//     void grabberReadyChanged(bool ready);
+//     void sceneChanged();
+//     void sceneGrabbed(const GammaRay::GrabbedFrame &frame);
+//
+// private:
+//     void setGrabbingMode(bool isGrabbingMode, const QRectF &userViewport);
+//     void windowAfterSynchronizing();
+//     void windowAfterRendering();
+//     void gatherRenderInfo();
+//     void drawDecorations();
+//     void updateOverlay();
+//     void itemParentChanged(QQuickItem *parent);
+//     void itemWindowChanged(QQuickWindow *window);
+//     void connectItemChanges(QQuickItem *item);
+//     void disconnectItemChanges(QQuickItem *item);
+//     void connectTopItemChanges(QQuickItem *item);
+//     void disconnectTopItemChanges(QQuickItem *item);
+//     QuickItemGeometry initFromItem(QQuickItem *item) const;
+//
+//     QPointer<QQuickWindow> m_window;
+//     QPointer<QQuickItem> m_currentToplevelItem;
+//     ItemOrLayoutFacade m_currentItem;
+//     QuickDecorationsSettings m_settings;
+//     bool m_isGrabbingMode;
+//     bool m_decorationsEnabled;
+//     QRectF m_userViewport;
+//     GrabbedFrame m_grabbedFrame;
+//     QMetaMethod m_sceneGrabbed;
+//     QMetaMethod m_sceneChanged;
+//     QMutex m_mutex;
+//     struct RenderInfo {
+//         // Keep in sync with QSGRendererInterface::GraphicsApi
+//         enum GraphicsApi {
+//             Unknown,
+//             Software,
+//             OpenGL,
+//             Direct3D12
+//         };
+//
+//         RenderInfo()
+//             : dpr(qQNaN())
+//             , graphicsApi(Unknown)
+//         { }
+//
+//         qreal dpr;
+//         QSize windowSize;
+//         GraphicsApi graphicsApi;
+//     } m_renderInfo;
+// };
 }
 
 Q_DECLARE_METATYPE(GammaRay::GrabbedFrame)
